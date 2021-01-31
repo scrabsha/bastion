@@ -13,7 +13,7 @@ use crate::envelope::{RefAddr, SignedMessage};
 use crate::supervisor::{SupervisionStrategy, Supervisor};
 
 use futures::channel::oneshot::{self, Receiver};
-use std::any::{type_name, Any};
+use std::any::{type_name, Any, TypeId};
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
@@ -768,6 +768,44 @@ macro_rules! msg {
     } };
 }
 
+/// Allows to dynamically dispatch messages depending on the input data type.
+struct MsgDispatcher {
+    /// The first element of the tuple represents a type T, the second element
+    /// represents a Box<dyn Fn(T)>.
+    candidates: Vec<(TypeId, Box<dyn Any>)>,
+}
+
+impl MsgDispatcher {
+    fn new() -> MsgDispatcher {
+        MsgDispatcher {
+            candidates: Vec::new(),
+        }
+    }
+
+    fn add_candidate<T: 'static>(&mut self, f: impl Fn(T) + 'static) {
+        let f_boxed: Box<dyn Fn(T)> = Box::new(f);
+        let f_anyfied: Box<dyn Any> = Box::new(f_boxed);
+        self.candidates.push((TypeId::of::<T>(), f_anyfied));
+    }
+
+    /// Tries to run the corresponding function if it exists.
+    ///
+    /// Returns whether if the function was found.
+    fn run_with<T: 'static>(&self, arg: T) -> bool {
+        let input_id = TypeId::of::<T>();
+
+        for (expected_id, func) in self.candidates.iter() {
+            if *expected_id == input_id {
+                let func = func.downcast_ref::<Box<dyn Fn(T)>>().unwrap();
+                func(arg);
+                return true;
+            }
+        }
+
+        false
+    }
+}
+
 #[macro_export]
 /// Answers to a given message, with the given answer.
 ///
@@ -820,4 +858,34 @@ macro_rules! answer {
         let sender = msg.take_sender().expect("failed to take render");
         sender.send($answer, sign)
     }};
+}
+
+#[cfg(test)]
+mod msg_dispatcher {
+    use super::*;
+
+    // Returns a simple dispatcher that is used in the next tests.
+    fn simple_dispatcher() -> MsgDispatcher {
+        let mut dispatcher = MsgDispatcher::new();
+        dispatcher.add_candidate(|_: i32| ());
+        dispatcher.add_candidate(|_: char| ());
+
+        dispatcher
+    }
+
+    #[test]
+    fn dispatch_candidate_found() {
+        let dispatcher = simple_dispatcher();
+
+        assert!(dispatcher.run_with(42));
+        assert!(dispatcher.run_with('🦀'));
+    }
+
+    #[test]
+    fn dispatch_no_candidate_found() {
+        let dispatcher = simple_dispatcher();
+
+        assert!(!dispatcher.run_with("hello, world"));
+        assert!(!dispatcher.run_with(101.0));
+    }
 }
