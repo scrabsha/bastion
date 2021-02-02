@@ -768,41 +768,128 @@ macro_rules! msg {
     } };
 }
 
-/// Allows to dynamically dispatch messages depending on the input data type.
-struct MsgDispatcher {
-    /// The first element of the tuple represents a type T, the second element
-    /// represents a Box<dyn Fn(T)>.
-    candidates: Vec<(TypeId, Box<dyn Any>)>,
+/// Allows to get the inner type of a message, no matter how it is stored.
+trait PackedMsg: Sized {
+    fn inner_type_id(&self) -> TypeId;
 }
 
-impl MsgDispatcher {
-    fn new() -> MsgDispatcher {
+impl PackedMsg for Box<dyn Message + 'static> {
+    fn inner_type_id(&self) -> TypeId {
+        (**self).type_id()
+    }
+}
+
+impl PackedMsg for Arc<dyn Message + 'static> {
+    fn inner_type_id(&self) -> TypeId {
+        (**self).type_id()
+    }
+}
+
+impl PackedMsg for (Box<dyn Message + 'static>, AnswerSender) {
+    fn inner_type_id(&self) -> TypeId {
+        // Here we are cheating a bit.
+        //
+        // We are loosing the information that we also have an AnswerSender.
+        // This *should* not cause any problem since the messages and the
+        // questions are in different MsgDispatchers.
+        self.0.inner_type_id()
+    }
+}
+
+#[cfg(test)]
+mod packed_msg {
+    use super::*;
+
+    #[test]
+    fn box_impl() {
+        assert_eq!(
+            (Box::new(42u32) as Box<dyn Message>).inner_type_id(),
+            TypeId::of::<u32>(),
+        );
+
+        assert_eq!(
+            (Box::new("hello, world") as Box<dyn Message>).inner_type_id(),
+            TypeId::of::<&'static str>(),
+        );
+    }
+
+    #[test]
+    fn arc_impl() {
+        assert_eq!(
+            (Arc::new(42u32) as Arc<dyn Message>).inner_type_id(),
+            TypeId::of::<u32>(),
+        );
+
+        assert_eq!(
+            (Arc::new('f') as Arc<dyn Message>).inner_type_id(),
+            TypeId::of::<char>(),
+        );
+    }
+}
+
+/// Allows to dynamically dispatch messages depending on the input data type.
+struct MsgDispatcher<Arg> {
+    /// The first element of the tuple represents a type T, argument of the
+    // function in the second element must be downcastable to T.
+    candidates: Vec<(TypeId, Box<dyn FnOnce(Arg)>)>,
+}
+
+impl<Arg: PackedMsg> MsgDispatcher<Arg> {
+    fn new() -> MsgDispatcher<Arg> {
         MsgDispatcher {
             candidates: Vec::new(),
         }
     }
 
-    fn add_candidate<T: 'static>(&mut self, f: impl Fn(T) + 'static) {
-        let f_boxed: Box<dyn Fn(T)> = Box::new(f);
-        let f_anyfied: Box<dyn Any> = Box::new(f_boxed);
-        self.candidates.push((TypeId::of::<T>(), f_anyfied));
+    /// Adds a new function to the collection.
+    fn add_candidate<F, Ty: 'static>(&mut self, f: F)
+    where
+        F: FnOnce(Arg) + 'static,
+    {
+        let f_boxed: Box<dyn FnOnce(Arg)> = Box::new(f);
+        self.candidates.push((TypeId::of::<Ty>(), f_boxed));
     }
 
     /// Tries to run the corresponding function if it exists.
     ///
     /// Returns whether if the function was found.
-    fn run_with<T: 'static>(&self, arg: T) -> bool {
-        let input_id = TypeId::of::<T>();
+    fn run_with(self, arg: Arg) -> bool {
+        let input_id = arg.inner_type_id();
 
-        for (expected_id, func) in self.candidates.iter() {
-            if *expected_id == input_id {
-                let func = func.downcast_ref::<Box<dyn Fn(T)>>().unwrap();
+        for (expected_id, func) in self.candidates {
+            if expected_id == input_id {
                 func(arg);
                 return true;
             }
         }
 
         false
+    }
+}
+
+#[cfg(test)]
+mod msg_dispatcher {
+    use super::*;
+
+    // Returns a simple dispatcher that is used in the next tests.
+    fn simple_dispatcher() -> MsgDispatcher<Box<dyn Message>> {
+        let mut dispatcher = MsgDispatcher::new();
+        dispatcher.add_candidate::<_, i32>(|_| ());
+        dispatcher.add_candidate::<_, char>(|_| ());
+
+        dispatcher
+    }
+
+    #[test]
+    fn dispatch_candidate_found() {
+        assert!(simple_dispatcher().run_with(Box::new(42i32) as Box<dyn Message>));
+        assert!(simple_dispatcher().run_with(Box::new('🦀')));
+    }
+
+    #[test]
+    fn dispatch_no_candidate_found() {
+        assert!(!simple_dispatcher().run_with(Box::new("hello, world") as Box<dyn Message>));
+        assert!(!simple_dispatcher().run_with(Box::new(101.0)));
     }
 }
 
@@ -858,34 +945,4 @@ macro_rules! answer {
         let sender = msg.take_sender().expect("failed to take render");
         sender.send($answer, sign)
     }};
-}
-
-#[cfg(test)]
-mod msg_dispatcher {
-    use super::*;
-
-    // Returns a simple dispatcher that is used in the next tests.
-    fn simple_dispatcher() -> MsgDispatcher {
-        let mut dispatcher = MsgDispatcher::new();
-        dispatcher.add_candidate(|_: i32| ());
-        dispatcher.add_candidate(|_: char| ());
-
-        dispatcher
-    }
-
-    #[test]
-    fn dispatch_candidate_found() {
-        let dispatcher = simple_dispatcher();
-
-        assert!(dispatcher.run_with(42));
-        assert!(dispatcher.run_with('🦀'));
-    }
-
-    #[test]
-    fn dispatch_no_candidate_found() {
-        let dispatcher = simple_dispatcher();
-
-        assert!(!dispatcher.run_with("hello, world"));
-        assert!(!dispatcher.run_with(101.0));
-    }
 }
