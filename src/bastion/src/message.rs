@@ -1160,3 +1160,15 @@ impl<O> MessageHandler<O> {
         }
     }
 }
+
+impl<O> Drop for MessageHandler<O> {
+    fn drop(&mut self) {
+        match &self.state {
+            MessageHandlerState::TemporarilyEmpty => {}
+            MessageHandlerState::Unmatched(msg) => panic!("Unmatched message: {:#?}", msg),
+            MessageHandlerState::Matched(_) => {
+                panic!("MessageHandler does not end with `on_fallback`")
+            }
+        }
+    }
+}
