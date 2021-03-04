@@ -1105,11 +1105,6 @@ impl<O> MessageHandler<O> {
         self
     }
 
-    fn matched(output: O) -> MessageHandler<O> {
-        let state = MessageHandlerState::Matched(output);
-        MessageHandler { state }
-    }
-
     fn try_take_question<T: 'static>(&mut self) -> Option<(T, AnswerSender)> {
         match self.state.take_message()? {
             SignedMessage {
