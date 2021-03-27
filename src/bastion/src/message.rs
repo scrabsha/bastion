@@ -1075,6 +1075,31 @@ impl<O> MessageHandler<O> {
         }
     }
 
+    // TODO: doc
+    pub fn on_dispatch<T, F>(self, f: F) -> MessageHandler<O>
+    where
+        T: 'static + Send + Sync,
+        F: FnOnce(&T, RefAddr) -> O
+    {
+        self.on_tell(|group_bcast: Arc<SignedMessage>, _sender_addr| {
+            MessageHandler::new(Self::extract(group_bcast))
+                .on_broadcast(|broadcast: &T, sender_addr| f(broadcast, sender_addr))
+                .on_fallback(|_, _| todo!())
+        })
+    }
+
+    fn extract<T>(mut data: Arc<T>) -> T {
+        loop {
+            match Arc::try_unwrap(data) {
+                Ok(d) => break d,
+                Err(failed) => {
+                    std::thread::yield_now();
+                    data = failed;
+                }
+            }
+        }
+    }
+
     fn matched(output: O) -> MessageHandler<O> {
         let state = MessageHandlerState::Matched(output);
         MessageHandler { state }
