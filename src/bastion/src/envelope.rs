@@ -105,6 +105,17 @@ impl SignedMessage {
     pub fn signature(&self) -> &RefAddr {
         &self.sign
     }
+
+    // Returns Some if the stored message is a broadcast message. Otherwise
+    // returns none.
+    //
+    // See code of Msg::try_clone for more explanation.
+    pub(crate) fn try_clone(&self) -> Option<SignedMessage> {
+        let msg = self.msg.try_clone()?;
+        let sign = self.sign.clone();
+
+        Some(SignedMessage { msg, sign })
+    }
 }
 
 #[derive(Debug, Clone)]

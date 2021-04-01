@@ -1079,25 +1079,18 @@ impl<O> MessageHandler<O> {
     pub fn on_dispatch<T, F>(self, f: F) -> MessageHandler<O>
     where
         T: 'static + Send + Sync,
-        F: FnOnce(&T, RefAddr) -> O
+        F: FnOnce(&T, RefAddr) -> O,
     {
         self.on_tell(|group_bcast: Arc<SignedMessage>, _sender_addr| {
-            MessageHandler::new(Self::extract(group_bcast))
-                .on_broadcast(|broadcast: &T, sender_addr| f(broadcast, sender_addr))
-                .on_fallback(|_, _| todo!())
-        })
-    }
+            let group_bcast = group_bcast
+                .as_ref()
+                .try_clone()
+                .expect("Attempt to dispatch a non-broadcast message");
 
-    fn extract<T>(mut data: Arc<T>) -> T {
-        loop {
-            match Arc::try_unwrap(data) {
-                Ok(d) => break d,
-                Err(failed) => {
-                    std::thread::yield_now();
-                    data = failed;
-                }
-            }
-        }
+            MessageHandler::new(group_bcast)
+                .on_broadcast(|broadcast, sender_addr| f(broadcast, sender_addr))
+                .on_fallback(|_, _| unreachable!())
+        })
     }
 
     fn matched(output: O) -> MessageHandler<O> {
